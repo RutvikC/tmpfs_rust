@@ -8,7 +8,7 @@ extern crate env_logger;
 use std::iter;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
-use libc::{ENOENT, EINVAL, EEXIST, ENOTEMPTY, EFBIG};
+use libc::{ENOENT, EINVAL, EEXIST, ENOTEMPTY, ENOSPC};
 use fuse::{FileAttr, FileType, Filesystem, Request,
     ReplyAttr, ReplyData, ReplyEntry, ReplyDirectory,
     ReplyEmpty, ReplyWrite, ReplyOpen, ReplyCreate};
@@ -19,12 +19,13 @@ pub struct File {
     data: Vec<u8>, // had to change this because append_data is a vector of 8-bit unsigned int
     is_updated: bool,
     old_size: i64,
+    data_size: i64,
 }
 
 impl File {
     /* Creates a new attribute for File*/
     fn new_file() -> File {
-        File{data: Vec::new(), is_updated: false, old_size: 0,}
+        File{data: Vec::new(), is_updated: false, old_size: 0, data_size: 0,}
     }
 
     /* Returns the number of bytes of data in the file*/
@@ -414,40 +415,30 @@ impl Filesystem for TmpFS {
         match self.files.get_mut(&ino) { // find the file first
             Some(fp) => {
                 match self.attrs.get_mut(&ino) { // get the file's attributes
-                    Some(attr) => {                        
-
-                        //println!("data.len(): {}", data.len());
-                        if self.fs_size_spec as u64 > self.fs_max_size {
+                    Some(attr) => {
+                        fp.data_size += data.len() as i64;                
+                        if (self.fs_size - fp.old_size + fp.data_size) as u64 > self.fs_max_size {
+                            //fp.data_size = 0;
                             error!("Exceeding maximum allocated size for File-system!");
+                            reply.error(ENOSPC);
                             return;
                         }
-
                         let size = fp.update_file(offset, &data); // write the additional data to the file
                         attr.atime = ts; // update the timestamp
                         attr.mtime = ts;
-
                         attr.size = fp.get_file_size(); // update the new size to the file's attribute
                         if size !=4096 && !fp.is_updated {
                             self.fs_size += fp.get_file_size() as i64;
                             fp.is_updated = true;
                             fp.old_size = fp.get_file_size() as i64;
+                            fp.data_size = 0;
                         }
                         else if size != 4096 {
                             self.fs_size += (fp.get_file_size() as i64) - fp.old_size;
                             fp.old_size = fp.get_file_size() as i64;
+                            fp.data_size = 0;
                         }
-                        println!("fs size: {}", self.fs_size);
-                        reply.written(size as u32);
-                        
-                        /***
-                        println!("After: fs size: {}", self.fs_size);
-                        if self.fs_size as u64 > self.fs_max_size {
-                            error!("Exceeding maximum allocated size for File-system!");
-                            reply.error(EFBIG);
-                            return;
-                        }
-                        ***/
-                        
+                        reply.written(size as u32);                      
                     }
                     None => {
                         error!("write: cannot find ino: {}", ino);
